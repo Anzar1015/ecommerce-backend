@@ -135,13 +135,28 @@ const productSchema = new Schema<IProduct>(
   }
 );
 
-// Text index powers the `search` query param (name/brand/tags/description).
+// Text index powers relevance-ranked search (sort=relevance): MongoDB's built-in
+// textScore. The general `search` filter itself uses per-field regex (see
+// product.repository.ts) instead of this index, because $text does stemmed
+// whole-word matching only — it can't match SKUs or support autocomplete-style
+// prefix/substring queries the way regex can. Trade-off: regex search can't use
+// a B-tree index for arbitrary substrings, so at very large catalog sizes this
+// should be swapped for a real search engine (MongoDB Atlas Search / Elasticsearch).
 productSchema.index({ name: 'text', description: 'text', brand: 'text', tags: 'text' });
 productSchema.index({ category: 1 });
 productSchema.index({ status: 1 });
 productSchema.index({ price: 1 });
 productSchema.index({ stock: 1 });
 productSchema.index({ createdAt: -1 });
+productSchema.index({ brand: 1 });
+productSchema.index({ name: 1 });
+productSchema.index({ 'ratings.average': -1 });
+// Compound indexes for the public catalog, which always filters by status
+// alongside one of these — a plain { status: 1 } index can't serve the
+// category/sort part of the query as efficiently as these prefixes can.
+productSchema.index({ status: 1, category: 1 });
+productSchema.index({ status: 1, createdAt: -1 });
+productSchema.index({ status: 1, price: 1 });
 
 productSchema.virtual('finalPrice').get(function (this: IProduct) {
   return Math.round(this.price * (1 - this.discount / 100) * 100) / 100;

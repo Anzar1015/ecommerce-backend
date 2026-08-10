@@ -1,16 +1,46 @@
 import mongoose, { FilterQuery } from 'mongoose';
 import { Product, IProduct, ProductStatus, StockStatus } from '../models/Product.model';
 import { Category } from '../models/Category.model';
+import { escapeRegex } from '../utils/regex';
+
+export type ProductSortOption =
+  | 'relevance'
+  | 'newest'
+  | 'oldest'
+  | 'price_asc'
+  | 'price_desc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'rating'
+  | 'popularity';
 
 export interface ProductFilters {
   category?: string;
+  /** More specific than `category`; when both are given, subcategory wins.
+   * Phase 1 has no category hierarchy (Category is a flat collection), so this
+   * resolves against the same collection as `category` — it's accepted and
+   * plumbed end-to-end for forward compatibility, but there is no distinct
+   * "subcategory" entity yet. */
+  subcategory?: string;
   brand?: string;
   tag?: string;
+  tags?: string[];
   search?: string;
   minPrice?: number;
   maxPrice?: number;
+  rating?: number;
+  inStock?: boolean;
+  minDiscount?: number;
   status?: ProductStatus;
-  sort: 'newest' | 'oldest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc' | 'rating';
+  sort: ProductSortOption;
+}
+
+export interface ProductSuggestion {
+  id: string;
+  name: string;
+  slug: string;
+  image?: string;
+  price: number;
 }
 
 export interface InventoryFilters {
@@ -35,7 +65,9 @@ export interface ProductStatusCounts {
   archived: number;
 }
 
-const sortMap: Record<ProductFilters['sort'], Record<string, 1 | -1>> = {
+// `relevance` isn't looked up here — it's only meaningful together with an
+// active search term and is computed via aggregation in findAllByRelevance().
+const sortMap: Record<Exclude<ProductSortOption, 'relevance'>, Record<string, 1 | -1>> = {
   newest: { createdAt: -1 },
   oldest: { createdAt: 1 },
   price_asc: { price: 1 },
@@ -43,6 +75,11 @@ const sortMap: Record<ProductFilters['sort'], Record<string, 1 | -1>> = {
   name_asc: { name: 1 },
   name_desc: { name: -1 },
   rating: { 'ratings.average': -1 },
+  // No real purchase/view analytics exist yet in Phase 1/2, so popularity is
+  // approximated by review count (a reasonable proxy: more reviews generally
+  // correlates with more sales). Swap this for a real sales/view counter once
+  // that data exists.
+  popularity: { 'ratings.count': -1, 'ratings.average': -1 },
 };
 
 const inventorySortMap: Record<InventoryFilters['sort'], Record<string, 1 | -1>> = {
@@ -74,14 +111,20 @@ async function buildFilterQuery(filters: ProductFilters): Promise<FilterQuery<IP
 
   if (filters.status) query.status = filters.status;
 
-  const categoryId = await resolveCategoryFilter(filters.category);
-  if (filters.category) {
+  const categoryTarget = filters.subcategory ?? filters.category;
+  if (categoryTarget) {
+    const categoryId = await resolveCategoryFilter(categoryTarget);
     // If the category couldn't be resolved, force zero results rather than an unfiltered list.
     query.category = categoryId ?? new mongoose.Types.ObjectId();
   }
 
-  if (filters.brand) query.brand = new RegExp(`^${filters.brand}$`, 'i');
-  if (filters.tag) query.tags = filters.tag;
+  if (filters.brand) query.brand = new RegExp(`^${escapeRegex(filters.brand)}$`, 'i');
+
+  if (filters.tags?.length) {
+    query.tags = { $in: filters.tags };
+  } else if (filters.tag) {
+    query.tags = filters.tag;
+  }
 
   if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
     query.price = {};
@@ -89,12 +132,117 @@ async function buildFilterQuery(filters: ProductFilters): Promise<FilterQuery<IP
     if (filters.maxPrice !== undefined) query.price.$lte = filters.maxPrice;
   }
 
+  if (filters.rating !== undefined) {
+    query['ratings.average'] = { $gte: filters.rating };
+  }
+
+  if (filters.inStock !== undefined) {
+    query.stock = filters.inStock ? { $gt: 0 } : { $lte: 0 };
+  }
+
+  if (filters.minDiscount !== undefined) {
+    query.discount = { $gte: filters.minDiscount };
+  }
+
   if (filters.search) {
-    query.$text = { $search: filters.search };
+    // Regex OR across fields rather than $text: this is the one place SKU
+    // search and substring/prefix matching (needed for autocomplete-style
+    // "contains" search) both have to work together, and $text can't do
+    // either (it's stemmed whole-word matching and SKU isn't in the text
+    // index). See the index comment in Product.model.ts for the trade-off.
+    const regex = new RegExp(escapeRegex(filters.search.trim()), 'i');
+    query.$or = [
+      { name: regex },
+      { description: regex },
+      { sku: regex },
+      { brand: regex },
+      { tags: regex },
+    ];
   }
 
   return query;
 }
+
+function relevanceScoreStage(term: string): Record<string, unknown> {
+  const escaped = escapeRegex(term.trim());
+  return {
+    $addFields: {
+      _relevanceScore: {
+        $sum: [
+          { $cond: [{ $regexMatch: { input: '$name', regex: `^${escaped}`, options: 'i' } }, 5, 0] },
+          { $cond: [{ $regexMatch: { input: '$name', regex: escaped, options: 'i' } }, 3, 0] },
+          {
+            $cond: [
+              { $regexMatch: { input: { $ifNull: ['$brand', ''] }, regex: escaped, options: 'i' } },
+              2,
+              0,
+            ],
+          },
+          { $cond: [{ $regexMatch: { input: '$sku', regex: escaped, options: 'i' } }, 2, 0] },
+          {
+            $cond: [
+              {
+                $gt: [
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$tags',
+                        as: 'tg',
+                        cond: { $regexMatch: { input: '$$tg', regex: escaped, options: 'i' } },
+                      },
+                    },
+                  },
+                  0,
+                ],
+              },
+              2,
+              0,
+            ],
+          },
+          { $cond: [{ $regexMatch: { input: '$description', regex: escaped, options: 'i' } }, 1, 0] },
+        ],
+      },
+    },
+  };
+}
+
+// Aggregation bypasses Mongoose virtuals/populate, so this mirrors the
+// finalPrice/inStock/stockStatus virtuals defined on Product.model.ts and the
+// category population shape — keep both in sync if those change.
+const virtualFieldsStage = {
+  $addFields: {
+    id: { $toString: '$_id' },
+    finalPrice: {
+      $round: [{ $multiply: ['$price', { $subtract: [1, { $divide: ['$discount', 100] }] }] }, 2],
+    },
+    inStock: { $gt: ['$stock', 0] },
+    stockStatus: {
+      $switch: {
+        branches: [
+          { case: { $lte: ['$stock', 0] }, then: 'out_of_stock' },
+          { case: { $lte: ['$stock', '$lowStockThreshold'] }, then: 'low_stock' },
+        ],
+        default: 'in_stock',
+      },
+    },
+  },
+};
+
+const categoryLookupStages = [
+  { $lookup: { from: 'categories', localField: 'category', foreignField: '_id', as: 'category' } },
+  { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+  {
+    $addFields: {
+      category: {
+        $cond: [
+          { $ifNull: ['$category._id', false] },
+          { _id: '$category._id', name: '$category.name', slug: '$category.slug' },
+          '$category',
+        ],
+      },
+    },
+  },
+];
 
 async function buildInventoryQuery(filters: InventoryFilters): Promise<FilterQuery<IProduct>> {
   const query: FilterQuery<IProduct> = {};
@@ -124,18 +272,72 @@ async function buildInventoryQuery(filters: InventoryFilters): Promise<FilterQue
  */
 export const productRepository = {
   async findAll(filters: ProductFilters, page: number, limit: number): Promise<IProduct[]> {
+    if (filters.sort === 'relevance' && filters.search) {
+      return productRepository.findAllByRelevance(filters, page, limit);
+    }
+
     const query = await buildFilterQuery(filters);
+    const sort = filters.sort === 'relevance' ? sortMap.newest : sortMap[filters.sort];
     return Product.find(query)
       .populate('category', 'name slug')
-      .sort(sortMap[filters.sort])
+      .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit)
       .exec();
   },
 
+  /** Relevance-ranked search: same filter/match criteria as findAll, but
+   * ordered by a computed text-match score instead of a plain field sort.
+   * Runs as an aggregation because Mongoose's find()/sort() can't express
+   * the weighted, multi-field scoring below. */
+  async findAllByRelevance(filters: ProductFilters, page: number, limit: number): Promise<IProduct[]> {
+    const query = await buildFilterQuery(filters);
+    const pipeline: mongoose.PipelineStage[] = [
+      { $match: query },
+      relevanceScoreStage(filters.search as string) as unknown as mongoose.PipelineStage,
+      virtualFieldsStage as unknown as mongoose.PipelineStage,
+      ...(categoryLookupStages as unknown as mongoose.PipelineStage[]),
+      { $sort: { _relevanceScore: -1, createdAt: -1 } },
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
+      { $project: { _relevanceScore: 0, __v: 0 } },
+    ];
+    const docs = await Product.aggregate(pipeline).exec();
+    return docs as unknown as IProduct[];
+  },
+
   async count(filters: ProductFilters): Promise<number> {
     const query = await buildFilterQuery(filters);
     return Product.countDocuments(query).exec();
+  },
+
+  /** Lightweight autocomplete: prefix match on name (uses the `name` index),
+   * falling back to a substring match on SKU/brand so codes and brand names
+   * still surface suggestions. */
+  async suggest(term: string, limit: number): Promise<ProductSuggestion[]> {
+    const trimmed = term.trim();
+    if (!trimmed) return [];
+    const escaped = escapeRegex(trimmed);
+    const prefixRegex = new RegExp(`^${escaped}`, 'i');
+    const containsRegex = new RegExp(escaped, 'i');
+
+    const docs = await Product.find({
+      status: 'active',
+      $or: [{ name: prefixRegex }, { sku: containsRegex }, { brand: containsRegex }],
+    })
+      .select('name slug images price')
+      .sort({ name: 1 })
+      .limit(limit)
+      .lean()
+      .exec();
+
+    return docs.map((doc) => ({
+      id: String(doc._id),
+      name: doc.name,
+      slug: doc.slug,
+      image: doc.images?.[0]?.url,
+      price: doc.price,
+    }));
   },
 
   async findById(id: string): Promise<IProduct | null> {

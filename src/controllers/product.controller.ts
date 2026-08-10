@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { ApiResponse } from '../utils/ApiResponse';
 import { productService } from '../services/product.service';
-import type { ProductQuery } from '../validators/product.validator';
+import type { ProductQuery, ProductSuggestQuery } from '../validators/product.validator';
 
 function filesFromRequest(req: Request): Express.Multer.File[] {
   return Array.isArray(req.files) ? req.files : [];
@@ -18,6 +18,14 @@ export const productController = {
     res
       .status(200)
       .json(new ApiResponse(200, { products, pagination }, 'Products fetched successfully'));
+  }),
+
+  suggestions: asyncHandler(async (req: Request, res: Response) => {
+    const { q, limit } = req.query as unknown as ProductSuggestQuery;
+    const suggestions = await productService.suggest(q, limit);
+    res
+      .status(200)
+      .json(new ApiResponse(200, { suggestions }, 'Suggestions fetched successfully'));
   }),
 
   getOne: asyncHandler(async (req: Request, res: Response) => {

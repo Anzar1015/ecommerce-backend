@@ -55,23 +55,51 @@ export const removeProductImageSchema = z.object({
   }),
 });
 
+const booleanFromString = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((val) => (val === undefined ? undefined : val === 'true'));
+
 export const productQuerySchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(12),
     category: z.string().optional(),
+    subcategory: z.string().optional(),
     brand: z.string().optional(),
     tag: z.string().optional(),
-    search: z.string().trim().optional(),
+    tags: tagsFromString,
+    search: z.string().trim().max(200).optional(),
     minPrice: z.coerce.number().min(0).optional(),
     maxPrice: z.coerce.number().min(0).optional(),
+    rating: z.coerce.number().min(0).max(5).optional(),
+    inStock: booleanFromString,
+    minDiscount: z.coerce.number().min(0).max(100).optional(),
     status: z.enum(['draft', 'active', 'archived']).optional(),
     sort: z
-      .enum(['newest', 'oldest', 'price_asc', 'price_desc', 'name_asc', 'name_desc', 'rating'])
+      .enum([
+        'relevance',
+        'newest',
+        'oldest',
+        'price_asc',
+        'price_desc',
+        'name_asc',
+        'name_desc',
+        'rating',
+        'popularity',
+      ])
       .default('newest'),
+  }),
+});
+
+export const productSuggestQuerySchema = z.object({
+  query: z.object({
+    q: z.string().trim().min(1, 'q is required').max(200),
+    limit: z.coerce.number().int().positive().max(20).default(8),
   }),
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>['body'];
 export type UpdateProductInput = z.infer<typeof updateProductSchema>['body'];
 export type ProductQuery = z.infer<typeof productQuerySchema>['query'];
+export type ProductSuggestQuery = z.infer<typeof productSuggestQuerySchema>['query'];

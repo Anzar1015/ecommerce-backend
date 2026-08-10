@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { productRepository, ProductFilters } from '../repositories/product.repository';
+import { productRepository, ProductFilters, ProductSuggestion } from '../repositories/product.repository';
 import { categoryRepository } from '../repositories/category.repository';
 import { ApiError } from '../utils/ApiError';
 import { slugify } from '../utils/slugify';
@@ -39,6 +39,10 @@ export const productService = {
     ]);
 
     return { products, pagination: buildPaginationMeta(total, page, limit) };
+  },
+
+  async suggest(q: string, limit: number): Promise<ProductSuggestion[]> {
+    return productRepository.suggest(q, limit);
   },
 
   async getByIdentifier(identifier: string, isAdmin: boolean): Promise<IProduct> {

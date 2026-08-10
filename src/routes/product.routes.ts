@@ -8,12 +8,16 @@ import {
   updateProductSchema,
   productIdParamSchema,
   productQuerySchema,
+  productSuggestQuerySchema,
   removeProductImageSchema,
 } from '../validators/product.validator';
 
 const router = Router();
 
 router.get('/', optionalAuthenticate, validate(productQuerySchema), productController.list);
+// Must be registered before /:identifier, otherwise "suggestions" would be
+// captured as a product identifier.
+router.get('/suggestions', validate(productSuggestQuerySchema), productController.suggestions);
 router.get('/:identifier', optionalAuthenticate, productController.getOne);
 
 router.post(
