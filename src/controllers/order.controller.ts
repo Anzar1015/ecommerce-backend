@@ -46,4 +46,9 @@ export const orderController = {
     const order = await orderService.updateStatusAdmin(req.params.id, req.body.status, req.body.note);
     res.status(200).json(new ApiResponse(200, { order }, 'Order status updated successfully'));
   }),
+
+  adminUpdateShipping: asyncHandler(async (req: Request, res: Response) => {
+    const order = await orderService.updateShippingDetailsAdmin(req.params.id, req.body);
+    res.status(200).json(new ApiResponse(200, { order }, 'Shipping details updated successfully'));
+  }),
 };

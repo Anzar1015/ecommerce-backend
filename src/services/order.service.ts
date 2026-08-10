@@ -6,17 +6,26 @@ import { productRepository } from '../repositories/product.repository';
 import { addressRepository } from '../repositories/address.repository';
 import { cartService } from './cart.service';
 import { paymentService } from './payment.service';
+import { couponService, CouponEligibleItem } from './coupon.service';
+import { shippingService } from './shipping.service';
 import { ApiError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
 import { buildPaginationMeta, PaginationMeta } from '../utils/pagination';
-import { IOrder, IOrderItem, IShippingAddress, OrderStatus } from '../models/Order.model';
+import { IOrder, IOrderItem, IOrderCoupon, IShippingAddress, OrderStatus } from '../models/Order.model';
 import { IProduct } from '../models/Product.model';
-import type { CheckoutInput } from '../validators/order.validator';
+import type { CheckoutInput, UpdateOrderShippingInput } from '../validators/order.validator';
 
 // Forward-only lifecycle; cancellation is handled separately since it can
 // happen from any pre-delivery state, not just the "current" one.
-const ORDER_SEQUENCE: OrderStatus[] = ['pending', 'confirmed', 'packed', 'shipped', 'delivered'];
-const CANCELLABLE_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'packed', 'shipped'];
+const ORDER_SEQUENCE: OrderStatus[] = [
+  'pending',
+  'confirmed',
+  'packed',
+  'shipped',
+  'out_for_delivery',
+  'delivered',
+];
+const CANCELLABLE_STATUSES: OrderStatus[] = ['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery'];
 
 async function generateOrderNumber(): Promise<string> {
   const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -50,6 +59,13 @@ async function restockOrderItems(order: IOrder): Promise<void> {
   await Promise.all(order.items.map((item) => productRepository.incrementStock(item.product.toString(), item.quantity)));
 }
 
+/** Restores a unit of coupon usage on cancellation, mirroring stock restocking. */
+async function releaseCouponUsageIfAny(order: IOrder): Promise<void> {
+  if (order.coupon) {
+    await couponService.releaseUsage(order.coupon.coupon.toString());
+  }
+}
+
 export const orderService = {
   /**
    * Validates the cart against live stock, reserves stock, snapshots
@@ -75,6 +91,40 @@ export const orderService = {
       }
       validatedItems.push({ product, quantity: item.quantity });
     }
+
+    const subtotal = Math.round(
+      validatedItems.reduce((sum, { product, quantity }) => sum + product.finalPrice * quantity, 0) * 100
+    ) / 100;
+    // Always recomputed here from the method alone — never trust a client-sent fee.
+    const shippingFee = shippingService.calculateFee(input.shippingMethod, subtotal);
+    const tax = 0; // No tax engine yet — placeholder field (see Order.model.ts).
+
+    // Coupon is validated and its discount computed BEFORE stock is reserved,
+    // so a rejected coupon (invalid/expired/limit-reached/etc.) never leaves
+    // stock decremented with nothing to compensate it — it just fails early.
+    // The frontend's earlier /coupons/validate preview is never trusted as
+    // the authoritative discount amount, since state (usage limits, stock,
+    // cart contents) can change between preview and placing the order.
+    let discount = 0;
+    let couponSnapshot: IOrderCoupon | undefined;
+    if (input.couponCode) {
+      const eligibleItems: CouponEligibleItem[] = validatedItems.map(({ product, quantity }) => ({
+        productId: product.id,
+        categoryId: product.category.toString(),
+        lineTotal: Math.round(product.finalPrice * quantity * 100) / 100,
+      }));
+      const application = await couponService.applyCoupon(userId, input.couponCode, subtotal, eligibleItems);
+      discount = application.discountAmount;
+      couponSnapshot = {
+        coupon: application.coupon._id as mongoose.Types.ObjectId,
+        code: application.coupon.code,
+        type: application.coupon.type,
+        value: application.coupon.value,
+        discountAmount: discount,
+      };
+    }
+
+    const total = Math.max(0, Math.round((subtotal - discount + shippingFee + tax) * 100) / 100);
 
     // Reserve stock. No multi-document transaction (would require a replica
     // set); instead we track what succeeded and compensate on failure.
@@ -110,10 +160,6 @@ export const orderService = {
       subtotal: Math.round(product.finalPrice * quantity * 100) / 100,
     }));
 
-    const subtotal = Math.round(items.reduce((sum, item) => sum + item.subtotal, 0) * 100) / 100;
-    const shippingFee = 0;
-    const total = Math.round((subtotal + shippingFee) * 100) / 100;
-
     const order = await orderRepository.create({
       orderNumber: await generateOrderNumber(),
       user: userId,
@@ -122,10 +168,33 @@ export const orderService = {
       status: 'pending',
       statusHistory: [{ status: 'pending', changedAt: new Date() }],
       payment: { method: input.paymentMethod, status: 'pending' },
+      shipping: { method: input.shippingMethod },
       subtotal,
+      discount,
+      tax,
       shippingFee,
       total,
+      coupon: couponSnapshot,
     });
+
+    // Recorded only after the order is durably created, so a checkout that
+    // fails earlier never consumes coupon usage. The order itself is already
+    // committed at this point (with its discount applied), so a lost race on
+    // the global usage counter is logged rather than failing the checkout —
+    // usedCount is a best-effort anti-abuse counter, not the source of truth
+    // for whether this specific order was entitled to the discount (that was
+    // already re-validated above).
+    if (couponSnapshot) {
+      try {
+        await couponService.recordUsage(couponSnapshot.coupon.toString());
+      } catch (error) {
+        logger.warn('Coupon usage counter could not be incremented (limit race)', {
+          couponCode: couponSnapshot.code,
+          orderId: order.id,
+          error: error instanceof Error ? error.message : error,
+        });
+      }
+    }
 
     // Routed through the payment abstraction rather than special-cased here, so
     // wiring up a new provider never requires touching the checkout flow.
@@ -167,6 +236,7 @@ export const orderService = {
     }
 
     await restockOrderItems(order);
+    await releaseCouponUsageIfAny(order);
 
     order.status = 'cancelled';
     order.cancelledAt = new Date();
@@ -207,6 +277,7 @@ export const orderService = {
         throw ApiError.badRequest(`This order can no longer be cancelled (status: ${order.status})`);
       }
       await restockOrderItems(order);
+      await releaseCouponUsageIfAny(order);
       order.cancelledAt = new Date();
       order.cancelReason = note;
     } else {
@@ -227,6 +298,20 @@ export const orderService = {
     await order.save();
 
     logger.info('Order status updated by admin', { orderId: order.id, status: nextStatus });
+    return order;
+  },
+
+  /** Sets tracking number / courier independently of a status change —
+   * admins may add tracking before or after marking an order shipped. */
+  async updateShippingDetailsAdmin(orderId: string, input: UpdateOrderShippingInput): Promise<IOrder> {
+    const order = await orderRepository.findById(orderId);
+    if (!order) throw ApiError.notFound('Order not found');
+
+    if (input.trackingNumber !== undefined) order.shipping.trackingNumber = input.trackingNumber;
+    if (input.courier !== undefined) order.shipping.courier = input.courier;
+    await order.save();
+
+    logger.info('Order shipping details updated by admin', { orderId: order.id });
     return order;
   },
 };

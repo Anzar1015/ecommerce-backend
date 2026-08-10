@@ -1,6 +1,8 @@
 import { Cart, ICart } from '../models/Cart.model';
 
-const PRODUCT_POPULATE_FIELDS = 'name slug images price discount stock status';
+// `category` is included so coupon eligibility (applicableCategories) can be
+// evaluated against the cart without a second query.
+const PRODUCT_POPULATE_FIELDS = 'name slug images price discount stock status category';
 
 /**
  * Repository layer: the ONLY place that talks to Mongoose directly

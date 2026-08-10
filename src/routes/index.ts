@@ -9,6 +9,8 @@ import orderRoutes from './order.routes';
 import paymentRoutes from './payment.routes';
 import inventoryRoutes from './inventory.routes';
 import dashboardRoutes from './dashboard.routes';
+import couponRoutes from './coupon.routes';
+import shippingRoutes from './shipping.routes';
 
 const router = Router();
 
@@ -22,5 +24,7 @@ router.use('/orders', orderRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/coupons', couponRoutes);
+router.use('/shipping', shippingRoutes);
 
 export default router;

@@ -12,6 +12,8 @@ export const checkoutSchema = z.object({
   body: z.object({
     addressId: z.string().min(1, 'Shipping address is required'),
     paymentMethod: paymentMethodSchema.default('cod'),
+    couponCode: z.string().trim().min(1).optional(),
+    shippingMethod: z.enum(['standard', 'express']).default('standard'),
   }),
 });
 
@@ -30,7 +32,14 @@ export const cancelOrderSchema = z.object({
   }),
 });
 
-const ADMIN_ASSIGNABLE_STATUSES = ['confirmed', 'packed', 'shipped', 'delivered', 'cancelled'] as const;
+const ADMIN_ASSIGNABLE_STATUSES = [
+  'confirmed',
+  'packed',
+  'shipped',
+  'out_for_delivery',
+  'delivered',
+  'cancelled',
+] as const;
 
 export const updateOrderStatusSchema = z.object({
   params: z.object({
@@ -40,6 +49,20 @@ export const updateOrderStatusSchema = z.object({
     status: z.enum(ADMIN_ASSIGNABLE_STATUSES),
     note: z.string().trim().max(500).optional(),
   }),
+});
+
+export const updateOrderShippingSchema = z.object({
+  params: z.object({
+    id: z.string().min(1),
+  }),
+  body: z
+    .object({
+      trackingNumber: z.string().trim().min(1).max(100).optional(),
+      courier: z.string().trim().min(1).max(100).optional(),
+    })
+    .refine((data) => data.trackingNumber !== undefined || data.courier !== undefined, {
+      message: 'Provide a tracking number and/or courier',
+    }),
 });
 
 export const orderHistoryQuerySchema = z.object({
@@ -53,7 +76,9 @@ export const adminOrderQuerySchema = z.object({
   query: z.object({
     page: z.coerce.number().int().positive().default(1),
     limit: z.coerce.number().int().positive().max(100).default(20),
-    status: z.enum(['pending', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled']).optional(),
+    status: z
+      .enum(['pending', 'confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'])
+      .optional(),
     search: z.string().trim().optional(),
   }),
 });
@@ -61,5 +86,6 @@ export const adminOrderQuerySchema = z.object({
 export type CheckoutInput = z.infer<typeof checkoutSchema>['body'];
 export type CancelOrderInput = z.infer<typeof cancelOrderSchema>['body'];
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>['body'];
+export type UpdateOrderShippingInput = z.infer<typeof updateOrderShippingSchema>['body'];
 export type OrderHistoryQuery = z.infer<typeof orderHistoryQuerySchema>['query'];
 export type AdminOrderQuery = z.infer<typeof adminOrderQuerySchema>['query'];

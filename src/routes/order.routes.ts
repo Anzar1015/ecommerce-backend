@@ -9,6 +9,7 @@ import {
   orderHistoryQuerySchema,
   adminOrderQuerySchema,
   updateOrderStatusSchema,
+  updateOrderShippingSchema,
 } from '../validators/order.validator';
 
 const router = Router();
@@ -25,6 +26,12 @@ router.patch(
   authorize('admin'),
   validate(updateOrderStatusSchema),
   orderController.adminUpdateStatus
+);
+router.patch(
+  '/admin/:id/shipping',
+  authorize('admin'),
+  validate(updateOrderShippingSchema),
+  orderController.adminUpdateShipping
 );
 
 // Customer

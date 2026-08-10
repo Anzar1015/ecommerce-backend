@@ -43,6 +43,16 @@ export const orderRepository = {
     return Order.countDocuments({ user: userId }).exec();
   },
 
+  /** Counts a user's non-cancelled orders that redeemed a given coupon code — the
+   * primitive behind per-user coupon usage limits. */
+  async countByUserAndCouponCode(userId: string, code: string): Promise<number> {
+    return Order.countDocuments({
+      user: userId,
+      'coupon.code': code.toUpperCase(),
+      status: { $ne: 'cancelled' },
+    }).exec();
+  },
+
   async findByIdForUser(userId: string, orderId: string): Promise<IOrder | null> {
     if (!mongoose.isValidObjectId(orderId)) return null;
     return Order.findOne({ _id: orderId, user: userId }).exec();
@@ -89,6 +99,7 @@ export const orderRepository = {
       confirmed: counts.confirmed ?? 0,
       packed: counts.packed ?? 0,
       shipped: counts.shipped ?? 0,
+      out_for_delivery: counts.out_for_delivery ?? 0,
       delivered: counts.delivered ?? 0,
       cancelled: counts.cancelled ?? 0,
     };
