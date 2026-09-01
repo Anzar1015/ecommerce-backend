@@ -53,6 +53,14 @@ export const orderRepository = {
     }).exec();
   },
 
+  /** The primitive behind review eligibility (spec 14.2 "verified purchaser"):
+   * a delivered order, placed by this user, containing this product. */
+  async findDeliveredOrderForUserAndProduct(userId: string, productId: string): Promise<IOrder | null> {
+    return Order.findOne({ user: userId, status: 'delivered', 'items.product': productId })
+      .sort({ createdAt: -1 })
+      .exec();
+  },
+
   async findByIdForUser(userId: string, orderId: string): Promise<IOrder | null> {
     if (!mongoose.isValidObjectId(orderId)) return null;
     return Order.findOne({ _id: orderId, user: userId }).exec();

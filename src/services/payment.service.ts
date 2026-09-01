@@ -1,9 +1,32 @@
 import { paymentProviderRegistry } from '../payments';
 import type { PaymentInitiationResult, PaymentProviderKey } from '../payments';
 import { orderRepository } from '../repositories/order.repository';
+import { notificationService } from './notification.service';
 import { ApiError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
-import { IOrder } from '../models/Order.model';
+import { IOrder, PaymentStatus } from '../models/Order.model';
+
+/** Best-effort: a notification failure should never fail the payment operation that triggered it. */
+async function notifyPaymentStatus(order: IOrder, status: PaymentStatus): Promise<void> {
+  if (status !== 'paid' && status !== 'failed') return; // no separate "pending" notification
+  try {
+    await notificationService.notify(order.user.toString(), {
+      type: 'PAYMENT',
+      title: status === 'paid' ? 'Payment Successful' : 'Payment Failed',
+      message:
+        status === 'paid'
+          ? `Payment for order ${order.orderNumber} was successful.`
+          : `Payment for order ${order.orderNumber} failed. Please try again.`,
+      link: `/orders/${order.id}`,
+    });
+  } catch (error) {
+    logger.warn('Failed to send payment notification', {
+      orderId: order.id,
+      status,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
 
 export const paymentService = {
   /** Called right after an order is created; never branches on provider name. */
@@ -23,6 +46,7 @@ export const paymentService = {
     order.payment.providerReference = result.providerReference ?? order.payment.providerReference;
     if (result.status === 'paid') order.payment.paidAt = new Date();
     await order.save();
+    await notifyPaymentStatus(order, result.status);
 
     logger.info('Payment verified', { orderId: order.id, provider: order.payment.method, status: result.status });
     return order;
@@ -46,6 +70,7 @@ export const paymentService = {
     order.payment.status = event.status;
     if (event.status === 'paid') order.payment.paidAt = new Date();
     await order.save();
+    await notifyPaymentStatus(order, event.status);
 
     logger.info('Payment updated via webhook', { orderId: order.id, provider: providerKey, status: event.status });
   },

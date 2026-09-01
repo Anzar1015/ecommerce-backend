@@ -1,10 +1,24 @@
 import crypto from 'crypto';
 import { userRepository } from '../repositories/user.repository';
+import { notificationService } from './notification.service';
 import { ApiError } from '../utils/ApiError';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../auth/jwt';
 import { IUser } from '../models/User.model';
 import { logger } from '../utils/logger';
 import type { LoginInput, RegisterInput } from '../validators/auth.validator';
+
+/** Best-effort: a notification failure should never fail the auth operation that triggered it. */
+async function notifyAccount(userId: string, title: string, message: string): Promise<void> {
+  try {
+    await notificationService.notify(userId, { type: 'ACCOUNT', title, message });
+  } catch (error) {
+    logger.warn('Failed to send account notification', {
+      userId,
+      title,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+}
 
 interface AuthTokens {
   accessToken: string;
@@ -32,6 +46,7 @@ export const authService = {
 
     const user = await userRepository.create(input);
     const tokens = await issueTokens(user);
+    await notifyAccount(user.id, 'Welcome to YourStore!', `Hi ${user.name}, thanks for joining YourStore.`);
 
     logger.info('User registered', { userId: user.id, email: user.email });
 
@@ -110,5 +125,10 @@ export const authService = {
 
     // Invalidate all existing sessions after a password reset
     await userRepository.clearAllRefreshTokens(user.id);
+    await notifyAccount(
+      user.id,
+      'Password Changed',
+      'Your password was changed successfully. If this wasn\'t you, please contact support immediately.'
+    );
   },
 };

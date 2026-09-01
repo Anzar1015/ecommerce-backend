@@ -28,3 +28,10 @@ export const uploadCategoryImage = multer({
   fileFilter: imageFileFilter,
   limits: { fileSize: MAX_FILE_SIZE_BYTES, files: 1 },
 }).single('image');
+
+/** Handles up to 4 review images sent under the "images" multipart field. */
+export const uploadReviewImages = multer({
+  storage,
+  fileFilter: imageFileFilter,
+  limits: { fileSize: MAX_FILE_SIZE_BYTES, files: 4 },
+}).array('images', 4);

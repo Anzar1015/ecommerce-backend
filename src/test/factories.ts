@@ -4,6 +4,7 @@ import { User, IUser } from '../models/User.model';
 import { Address, IAddress } from '../models/Address.model';
 import { Cart } from '../models/Cart.model';
 import { Coupon, ICoupon } from '../models/Coupon.model';
+import { Order, IOrder, OrderStatus } from '../models/Order.model';
 
 let counter = 0;
 function nextId(): number {
@@ -71,6 +72,40 @@ export async function createAddress(userId: string, overrides: Partial<IAddress>
 /** Creates/replaces the given user's cart with the provided items. */
 export async function setCartItems(userId: string, items: { product: string; quantity: number }[]): Promise<void> {
   await Cart.findOneAndUpdate({ user: userId }, { user: userId, items }, { upsert: true, new: true });
+}
+
+/** Directly inserts an Order document (bypassing checkout) at a given status —
+ * for tests of features that key off order/status state (reviews, coupon
+ * usage) without re-exercising the full checkout flow already covered
+ * elsewhere. */
+export async function createOrder(
+  userId: string,
+  productId: string,
+  overrides: Partial<IOrder> & { status?: OrderStatus } = {}
+): Promise<IOrder> {
+  const n = nextId();
+  return Order.create({
+    orderNumber: overrides.orderNumber ?? `ORD-TEST-${n}`,
+    user: userId,
+    items: overrides.items ?? [
+      { product: productId, name: `Product ${n}`, sku: `SKU-${n}`, price: 100, quantity: 1, subtotal: 100 },
+    ],
+    shippingAddress: overrides.shippingAddress ?? {
+      fullName: 'Test User',
+      phone: '9876543210',
+      addressLine1: '123 Test Street',
+      city: 'Mumbai',
+      state: 'Maharashtra',
+      postalCode: '400001',
+      country: 'India',
+    },
+    status: overrides.status ?? 'delivered',
+    payment: overrides.payment ?? { method: 'cod', status: 'paid' },
+    shipping: overrides.shipping ?? { method: 'standard' },
+    subtotal: overrides.subtotal ?? 100,
+    total: overrides.total ?? 100,
+    ...overrides,
+  });
 }
 
 export async function createCoupon(overrides: Partial<ICoupon> & { createdBy: string }): Promise<ICoupon> {

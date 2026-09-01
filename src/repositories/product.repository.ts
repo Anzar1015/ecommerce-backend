@@ -360,6 +360,13 @@ export const productRepository = {
     return Product.countDocuments({ category: categoryId }).exec();
   },
 
+  /** Syncs the denormalized ratings summary shown on product cards/detail
+   * pages — recomputed by review.service.ts whenever a product's set of
+   * approved reviews changes. */
+  async updateRatings(productId: string, ratings: { average: number; count: number }): Promise<void> {
+    await Product.findByIdAndUpdate(productId, { ratings }).exec();
+  },
+
   async create(data: mongoose.AnyKeys<IProduct>): Promise<IProduct> {
     return Product.create(data);
   },

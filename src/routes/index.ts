@@ -11,6 +11,8 @@ import inventoryRoutes from './inventory.routes';
 import dashboardRoutes from './dashboard.routes';
 import couponRoutes from './coupon.routes';
 import shippingRoutes from './shipping.routes';
+import reviewRoutes from './review.routes';
+import notificationRoutes from './notification.routes';
 
 const router = Router();
 
@@ -26,5 +28,7 @@ router.use('/inventory', inventoryRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/coupons', couponRoutes);
 router.use('/shipping', shippingRoutes);
+router.use('/reviews', reviewRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;

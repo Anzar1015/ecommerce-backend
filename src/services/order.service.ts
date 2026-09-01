@@ -8,11 +8,13 @@ import { cartService } from './cart.service';
 import { paymentService } from './payment.service';
 import { couponService, CouponEligibleItem } from './coupon.service';
 import { shippingService } from './shipping.service';
+import { notificationService } from './notification.service';
 import { ApiError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
 import { buildPaginationMeta, PaginationMeta } from '../utils/pagination';
 import { IOrder, IOrderItem, IOrderCoupon, IShippingAddress, OrderStatus } from '../models/Order.model';
 import { IProduct } from '../models/Product.model';
+import { NotificationType } from '../models/Notification.model';
 import type { CheckoutInput, UpdateOrderShippingInput } from '../validators/order.validator';
 
 // Forward-only lifecycle; cancellation is handled separately since it can
@@ -63,6 +65,49 @@ async function restockOrderItems(order: IOrder): Promise<void> {
 async function releaseCouponUsageIfAny(order: IOrder): Promise<void> {
   if (order.coupon) {
     await couponService.releaseUsage(order.coupon.coupon.toString());
+  }
+}
+
+/** `order.user` is a plain ObjectId on most code paths, but `findById` (used
+ * by the admin status/detail routes) populates it with `{name, email}` —
+ * calling `.toString()` on a populated Mongoose subdocument does NOT return
+ * the hex id, so callers must go through this instead of `order.user.toString()`. */
+function resolveOrderUserId(order: IOrder): string {
+  const user = order.user as unknown as { _id?: mongoose.Types.ObjectId };
+  return user && typeof user === 'object' && user._id ? user._id.toString() : (order.user as mongoose.Types.ObjectId).toString();
+}
+
+// "shipped"/"out_for_delivery" are categorized as SHIPPING (spec 15.1 lists it
+// as its own type, distinct from ORDER); every other lifecycle step is ORDER.
+const ORDER_STATUS_NOTIFICATION_COPY: Partial<
+  Record<OrderStatus, { type: NotificationType; title: string; message: (order: IOrder) => string }>
+> = {
+  pending: { type: 'ORDER', title: 'Order Placed', message: (o) => `Your order ${o.orderNumber} has been placed successfully.` },
+  confirmed: { type: 'ORDER', title: 'Order Confirmed', message: (o) => `Your order ${o.orderNumber} has been confirmed.` },
+  packed: { type: 'ORDER', title: 'Order Packed', message: (o) => `Your order ${o.orderNumber} has been packed and is ready to ship.` },
+  shipped: { type: 'SHIPPING', title: 'Order Shipped', message: (o) => `Your order ${o.orderNumber} has shipped.` },
+  out_for_delivery: { type: 'SHIPPING', title: 'Out for Delivery', message: (o) => `Your order ${o.orderNumber} is out for delivery.` },
+  delivered: { type: 'ORDER', title: 'Order Delivered', message: (o) => `Your order ${o.orderNumber} has been delivered. Enjoy!` },
+  cancelled: { type: 'ORDER', title: 'Order Cancelled', message: (o) => `Your order ${o.orderNumber} has been cancelled.` },
+};
+
+/** Best-effort: a notification failure should never fail the order operation that triggered it. */
+async function notifyOrderStatus(order: IOrder, status: OrderStatus): Promise<void> {
+  const copy = ORDER_STATUS_NOTIFICATION_COPY[status];
+  if (!copy) return;
+  try {
+    await notificationService.notify(resolveOrderUserId(order), {
+      type: copy.type,
+      title: copy.title,
+      message: copy.message(order),
+      link: `/orders/${order.id}`,
+    });
+  } catch (error) {
+    logger.warn('Failed to send order notification', {
+      orderId: order.id,
+      status,
+      error: error instanceof Error ? error.message : error,
+    });
   }
 }
 
@@ -204,6 +249,7 @@ export const orderService = {
     await order.save();
 
     await cartService.clear(userId);
+    await notifyOrderStatus(order, 'pending');
     logger.info('Order placed', { orderId: order.id, orderNumber: order.orderNumber, userId, total });
 
     return order;
@@ -243,6 +289,7 @@ export const orderService = {
     order.cancelReason = reason;
     order.statusHistory.push({ status: 'cancelled', changedAt: new Date(), note: reason });
     await order.save();
+    await notifyOrderStatus(order, 'cancelled');
 
     logger.info('Order cancelled by customer', { orderId: order.id, userId });
     return order;
@@ -296,6 +343,7 @@ export const orderService = {
     order.status = nextStatus;
     order.statusHistory.push({ status: nextStatus, changedAt: new Date(), note });
     await order.save();
+    await notifyOrderStatus(order, nextStatus);
 
     logger.info('Order status updated by admin', { orderId: order.id, status: nextStatus });
     return order;

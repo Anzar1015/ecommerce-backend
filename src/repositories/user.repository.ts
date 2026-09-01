@@ -52,6 +52,12 @@ export const userRepository = {
     return User.countDocuments({ role }).exec();
   },
 
+  /** Ids only — used for bulk operations like the new-promotion notification fan-out. */
+  async findIdsByRole(role: UserRole): Promise<string[]> {
+    const users = await User.find({ role }).select('_id').lean().exec();
+    return users.map((user) => user._id.toString());
+  },
+
   async countByRoleSince(role: UserRole, since: Date): Promise<number> {
     return User.countDocuments({ role, createdAt: { $gte: since } }).exec();
   },

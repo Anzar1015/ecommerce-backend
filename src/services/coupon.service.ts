@@ -1,7 +1,10 @@
 import { couponRepository, CouponFilters } from '../repositories/coupon.repository';
 import { orderRepository } from '../repositories/order.repository';
+import { userRepository } from '../repositories/user.repository';
 import { cartService } from './cart.service';
+import { notificationService } from './notification.service';
 import { ApiError } from '../utils/ApiError';
+import { logger } from '../utils/logger';
 import { buildPaginationMeta, PaginationMeta } from '../utils/pagination';
 import { ICoupon } from '../models/Coupon.model';
 import { IProduct } from '../models/Product.model';
@@ -141,7 +144,32 @@ export const couponService = {
   async create(input: CreateCouponInput, createdBy: string): Promise<ICoupon> {
     const existing = await couponRepository.findByCode(input.code);
     if (existing) throw ApiError.conflict('A coupon with this code already exists');
-    return couponRepository.create({ ...input, createdBy });
+    const coupon = await couponRepository.create({ ...input, createdBy });
+
+    // Best-effort fan-out: a live, immediately-usable coupon is worth telling
+    // customers about (spec 15.3 "New promotion" / "Coupon available"). A
+    // coupon created inactive, or scheduled to start later, doesn't notify —
+    // there's nothing to act on yet.
+    const isLiveNow = coupon.isActive && coupon.startDate <= new Date();
+    if (isLiveNow) {
+      try {
+        const customerIds = await userRepository.findIdsByRole('customer');
+        await notificationService.notifyMany(customerIds, {
+          type: 'PROMOTION',
+          title: 'New Coupon Available',
+          message: `Use code ${coupon.code} for ${
+            coupon.type === 'PERCENTAGE' ? `${coupon.value}% off` : `₹${coupon.value} off`
+          } your next order.`,
+        });
+      } catch (error) {
+        logger.warn('Failed to send new-coupon promotion notifications', {
+          couponId: coupon.id,
+          error: error instanceof Error ? error.message : error,
+        });
+      }
+    }
+
+    return coupon;
   },
 
   async list(filters: CouponFilters, page: number, limit: number): Promise<{ coupons: ICoupon[]; pagination: PaginationMeta }> {
