@@ -16,7 +16,7 @@ export type ShippingMethod = 'standard' | 'express';
 // 'stripe' | 'razorpay' are schema/type-ready for when those providers are registered
 // (see src/payments) — the API only accepts currently-implemented methods.
 export type PaymentMethod = 'cod' | 'stripe' | 'razorpay';
-export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded' | 'partially_refunded';
 
 export interface IOrderItem {
   product: Types.ObjectId;
@@ -51,6 +51,21 @@ export interface IOrderPayment {
   paidAt?: Date;
   /** Gateway transaction/charge id, set once an online provider verifies or webhooks in. */
   providerReference?: string;
+  // Razorpay-specific (named, indexed fields rather than folding into the
+  // generic providerReference above, per the integration requirements —
+  // razorpayOrderId also gets mirrored into providerReference so the
+  // provider-agnostic webhook lookup in payment.service.ts keeps working
+  // unchanged for every provider, Razorpay included).
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  razorpaySignature?: string;
+}
+
+export interface IOrderRefund {
+  amount: number;
+  razorpayRefundId: string;
+  reason?: string;
+  createdAt: Date;
 }
 
 export interface IOrderShipping {
@@ -89,6 +104,7 @@ export interface IOrder extends Document {
   shippingFee: number;
   total: number;
   coupon?: IOrderCoupon;
+  refunds: IOrderRefund[];
   cancelledAt?: Date;
   cancelReason?: string;
   createdAt: Date;
@@ -156,6 +172,16 @@ const orderCouponSchema = new Schema<IOrderCoupon>(
   { _id: false }
 );
 
+const orderRefundSchema = new Schema<IOrderRefund>(
+  {
+    amount: { type: Number, required: true, min: 0 },
+    razorpayRefundId: { type: String, required: true },
+    reason: { type: String, trim: true, maxlength: 500 },
+    createdAt: { type: Date, required: true, default: Date.now },
+  },
+  { _id: false }
+);
+
 const orderSchema = new Schema<IOrder>(
   {
     orderNumber: {
@@ -191,9 +217,16 @@ const orderSchema = new Schema<IOrder>(
     },
     payment: {
       method: { type: String, enum: ['cod', 'stripe', 'razorpay'], required: true, default: 'cod' },
-      status: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
+      status: {
+        type: String,
+        enum: ['pending', 'paid', 'failed', 'refunded', 'partially_refunded'],
+        default: 'pending',
+      },
       paidAt: { type: Date },
       providerReference: { type: String },
+      razorpayOrderId: { type: String },
+      razorpayPaymentId: { type: String },
+      razorpaySignature: { type: String },
     },
     shipping: {
       method: { type: String, enum: ['standard', 'express'], required: true, default: 'standard' },
@@ -206,6 +239,7 @@ const orderSchema = new Schema<IOrder>(
     shippingFee: { type: Number, required: true, min: 0, default: 0 },
     total: { type: Number, required: true, min: 0 },
     coupon: { type: orderCouponSchema, required: false },
+    refunds: { type: [orderRefundSchema], default: [] },
     cancelledAt: { type: Date },
     cancelReason: { type: String, trim: true, maxlength: 500 },
   },
@@ -223,5 +257,9 @@ const orderSchema = new Schema<IOrder>(
 
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
+// Sparse: most orders (COD) never populate these, so a dense index would
+// waste space indexing a field that's usually absent.
+orderSchema.index({ 'payment.razorpayOrderId': 1 }, { sparse: true });
+orderSchema.index({ 'payment.razorpayPaymentId': 1 }, { sparse: true });
 
 export const Order = model<IOrder, IOrderModel>('Order', orderSchema);

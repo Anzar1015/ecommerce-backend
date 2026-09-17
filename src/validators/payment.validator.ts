@@ -15,4 +15,16 @@ export const webhookParamSchema = z.object({
   }),
 });
 
+export const refundPaymentSchema = z.object({
+  params: z.object({
+    orderId: z.string().min(1),
+  }),
+  body: z.object({
+    // Omit for a full refund of whatever remains unrefunded.
+    amount: z.coerce.number().positive('Refund amount must be greater than 0').optional(),
+    reason: z.string().trim().max(500).optional(),
+  }),
+});
+
 export type VerifyPaymentInput = z.infer<typeof verifyPaymentSchema>['body'];
+export type RefundPaymentInput = z.infer<typeof refundPaymentSchema>['body'];

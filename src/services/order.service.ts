@@ -12,6 +12,7 @@ import { notificationService } from './notification.service';
 import { ApiError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
 import { buildPaginationMeta, PaginationMeta } from '../utils/pagination';
+import { resolveOrderUserId } from '../utils/orderUser';
 import { IOrder, IOrderItem, IOrderCoupon, IShippingAddress, OrderStatus } from '../models/Order.model';
 import { IProduct } from '../models/Product.model';
 import { NotificationType } from '../models/Notification.model';
@@ -66,15 +67,6 @@ async function releaseCouponUsageIfAny(order: IOrder): Promise<void> {
   if (order.coupon) {
     await couponService.releaseUsage(order.coupon.coupon.toString());
   }
-}
-
-/** `order.user` is a plain ObjectId on most code paths, but `findById` (used
- * by the admin status/detail routes) populates it with `{name, email}` —
- * calling `.toString()` on a populated Mongoose subdocument does NOT return
- * the hex id, so callers must go through this instead of `order.user.toString()`. */
-function resolveOrderUserId(order: IOrder): string {
-  const user = order.user as unknown as { _id?: mongoose.Types.ObjectId };
-  return user && typeof user === 'object' && user._id ? user._id.toString() : (order.user as mongoose.Types.ObjectId).toString();
 }
 
 // "shipped"/"out_for_delivery" are categorized as SHIPPING (spec 15.1 lists it
@@ -243,15 +235,64 @@ export const orderService = {
 
     // Routed through the payment abstraction rather than special-cased here, so
     // wiring up a new provider never requires touching the checkout flow.
-    const paymentInit = await paymentService.initiatePayment(order);
+    // Stock is already reserved above regardless of payment method, so an
+    // initiation failure here (e.g. a Razorpay API/network error) doesn't
+    // need to restock anything — the order stays in the same retryable
+    // "payment failed" state that a rejected verification would leave it in
+    // (see paymentService.verifyPayment), and the existing retry-payment
+    // path picks it back up.
+    let paymentInit;
+    try {
+      paymentInit = await paymentService.initiatePayment(order);
+    } catch (error) {
+      order.payment.status = 'failed';
+      await order.save();
+      logger.error('Payment initiation failed', {
+        orderId: order.id,
+        error: error instanceof Error ? error.message : error,
+      });
+      throw ApiError.internal('We could not start your payment. Please try again from your orders page.');
+    }
+
     order.payment.status = paymentInit.status;
     order.payment.providerReference = paymentInit.providerReference;
+    if (paymentInit.razorpayOrderId) order.payment.razorpayOrderId = paymentInit.razorpayOrderId;
     await order.save();
 
     await cartService.clear(userId);
     await notifyOrderStatus(order, 'pending');
     logger.info('Order placed', { orderId: order.id, orderNumber: order.orderNumber, userId, total });
 
+    return order;
+  },
+
+  /**
+   * Re-initiates payment for an order that's still awaiting it — the recovery
+   * path for a customer who closed the Razorpay checkout modal without
+   * paying, or whose payment attempt failed. Stock stays reserved from the
+   * original checkout; this only asks the provider for a fresh payment
+   * attempt (a new Razorpay order id) against the same YourStore order.
+   */
+  async retryPayment(userId: string, orderId: string): Promise<IOrder> {
+    const order = await orderRepository.findByIdForUser(userId, orderId);
+    if (!order) throw ApiError.notFound('Order not found');
+
+    if (order.status === 'cancelled') {
+      throw ApiError.badRequest('This order has been cancelled');
+    }
+    if (order.payment.status !== 'pending' && order.payment.status !== 'failed') {
+      throw ApiError.badRequest(`This order's payment is already "${order.payment.status}"`);
+    }
+
+    const paymentInit = await paymentService.initiatePayment(order);
+    order.payment.status = paymentInit.status;
+    order.payment.providerReference = paymentInit.providerReference;
+    if (paymentInit.razorpayOrderId) order.payment.razorpayOrderId = paymentInit.razorpayOrderId;
+    // Clear any signature from a prior failed attempt — it belongs to the old razorpay order id, not this one.
+    order.payment.razorpaySignature = undefined;
+    await order.save();
+
+    logger.info('Payment retried', { orderId: order.id, userId });
     return order;
   },
 

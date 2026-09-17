@@ -34,6 +34,14 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().default('no-reply@yourstore.com'),
+
+  // Optional at the schema level so the app can boot with Razorpay
+  // unconfigured (e.g. fresh clone before secrets are filled in) — but see
+  // config/razorpay.ts, which fails fast the moment the provider is actually
+  // used without them.
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -80,5 +88,11 @@ export const config = {
     user: env.SMTP_USER,
     pass: env.SMTP_PASS,
     from: env.MAIL_FROM,
+  },
+
+  razorpay: {
+    keyId: env.RAZORPAY_KEY_ID,
+    keySecret: env.RAZORPAY_KEY_SECRET,
+    webhookSecret: env.RAZORPAY_WEBHOOK_SECRET,
   },
 } as const;

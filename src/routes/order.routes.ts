@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { orderController } from '../controllers/order.controller';
 import { validate } from '../middleware/validate.middleware';
 import { authenticate, authorize } from '../middleware/auth.middleware';
+import { paymentLimiter } from '../middleware/rateLimiter.middleware';
 import {
   checkoutSchema,
   orderIdParamSchema,
@@ -35,9 +36,10 @@ router.patch(
 );
 
 // Customer
-router.post('/checkout', validate(checkoutSchema), orderController.checkout);
+router.post('/checkout', paymentLimiter, validate(checkoutSchema), orderController.checkout);
 router.get('/', validate(orderHistoryQuerySchema), orderController.myOrders);
 router.get('/:id', validate(orderIdParamSchema), orderController.myOrderDetails);
 router.post('/:id/cancel', validate(cancelOrderSchema), orderController.cancel);
+router.post('/:id/retry-payment', paymentLimiter, validate(orderIdParamSchema), orderController.retryPayment);
 
 export default router;

@@ -31,6 +31,12 @@ export const orderController = {
     res.status(200).json(new ApiResponse(200, { order }, 'Order cancelled successfully'));
   }),
 
+  retryPayment: asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) throw ApiError.unauthorized();
+    const order = await orderService.retryPayment(req.user.sub, req.params.id);
+    res.status(200).json(new ApiResponse(200, { order }, 'Payment re-initiated'));
+  }),
+
   adminList: asyncHandler(async (req: Request, res: Response) => {
     const { page, limit, ...filters } = req.query as unknown as AdminOrderQuery;
     const result = await orderService.listOrdersAdmin(filters, page, limit);
