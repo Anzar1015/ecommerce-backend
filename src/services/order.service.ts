@@ -271,7 +271,7 @@ export const orderService = {
    * path for a customer who closed the Razorpay checkout modal without
    * paying, or whose payment attempt failed. Stock stays reserved from the
    * original checkout; this only asks the provider for a fresh payment
-   * attempt (a new Razorpay order id) against the same YourStore order.
+   * attempt (a new Razorpay order id) against the same Cartify order.
    */
   async retryPayment(userId: string, orderId: string): Promise<IOrder> {
     const order = await orderRepository.findByIdForUser(userId, orderId);

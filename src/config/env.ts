@@ -33,7 +33,7 @@ const envSchema = z.object({
   SMTP_PORT: z.string().optional(),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  MAIL_FROM: z.string().default('no-reply@yourstore.com'),
+  MAIL_FROM: z.string().default('no-reply@cartify.com'),
 
   // Optional at the schema level so the app can boot with Razorpay
   // unconfigured (e.g. fresh clone before secrets are filled in) — but see

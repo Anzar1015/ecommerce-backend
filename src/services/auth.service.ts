@@ -46,7 +46,7 @@ export const authService = {
 
     const user = await userRepository.create(input);
     const tokens = await issueTokens(user);
-    await notifyAccount(user.id, 'Welcome to YourStore!', `Hi ${user.name}, thanks for joining YourStore.`);
+    await notifyAccount(user.id, 'Welcome to Cartify!', `Hi ${user.name}, thanks for joining Cartify!`);
 
     logger.info('User registered', { userId: user.id, email: user.email });
 

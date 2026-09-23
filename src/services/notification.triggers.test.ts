@@ -65,7 +65,7 @@ describe('Account notifications (spec 15.3)', () => {
     });
 
     const result = await notificationService.listForUser(user.id, { type: 'ACCOUNT' }, 1, 10);
-    expect(result.notifications.map((n) => n.title)).toContain('Welcome to YourStore!');
+    expect(result.notifications.map((n) => n.title)).toContain('Welcome to Cartify!');
   });
 
   it('sends a password-changed notification on reset', async () => {
