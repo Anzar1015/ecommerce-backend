@@ -4,8 +4,12 @@ import { durationToMs } from '../auth/jwt';
 
 const baseCookieOptions = {
   httpOnly: true,
-  secure: config.isProduction, // HTTPS only in production
-  sameSite: (config.isProduction ? 'strict' : 'lax') as 'strict' | 'lax',
+  secure: config.isProduction, // HTTPS only in production — required for SameSite=None
+  // Frontend and backend live on different domains in production, so these
+  // cookies are cross-site from the browser's perspective: SameSite=Strict
+  // (or even Lax) would simply never be sent on API requests. None is the
+  // only setting that works cross-site, and it requires Secure to be set.
+  sameSite: (config.isProduction ? 'none' : 'lax') as 'none' | 'lax',
   signed: true,
   path: '/',
 };
